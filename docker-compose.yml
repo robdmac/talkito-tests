@@ -1,0 +1,50 @@
+version: '3.8'
+
+services:
+  talkito-test:
+    build:
+      context: ..
+      dockerfile: tests-repo/Dockerfile
+      shm_size: '4gb'
+    mem_limit: 8g
+    memswap_limit: 8g
+    environment:
+      - TALKITO_AUTO_APPROVE_DOWNLOADS=1
+      - PYTHONUNBUFFERED=1
+    volumes:
+      # Mount the source code for development
+      - ../talkito:/app/talkito
+      - ../tests-repo:/app/tests-repo
+    command: python tests-repo/test_asr_e2e.py
+
+  stdin-test:
+    build:
+      context: ..
+      dockerfile: tests-repo/Dockerfile
+      shm_size: '4gb'
+    mem_limit: 8g
+    memswap_limit: 8g
+    environment:
+      - TALKITO_AUTO_APPROVE_DOWNLOADS=1
+      - PYTHONUNBUFFERED=1
+    volumes:
+      # Mount the source code for development
+      - ../talkito:/app/talkito
+      - ../tests-repo:/app/tests-repo
+    command: python tests-repo/test_stdin_e2e.py
+
+  pexpect-test:
+    build:
+      context: ..
+      dockerfile: tests-repo/Dockerfile
+      shm_size: '4gb'
+    mem_limit: 8g
+    memswap_limit: 8g
+    environment:
+      - TALKITO_AUTO_APPROVE_DOWNLOADS=1
+      - PYTHONUNBUFFERED=1
+    volumes:
+      # Mount the source code for development
+      - ../talkito:/app/talkito
+      - ../tests-repo:/app/tests-repo
+    command: python tests-repo/test_claude_pexpect.py
