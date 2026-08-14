@@ -3,6 +3,7 @@
 """End-to-end round-trip test: TTS synthesizes text, ASR transcribes it back, results are scored."""
 
 import argparse
+import hashlib
 import io
 import json
 import os
@@ -318,6 +319,8 @@ class RoundTripResult:
     tts_seconds: float
     asr_seconds: float
     audio_seconds: float
+    speech_seconds: float = 0.0
+    from_cache: bool = False
     category: str = "core"
     error: Optional[str] = None
 
@@ -329,6 +332,16 @@ class RoundTripResult:
     def rtf(self) -> float:
         """Real-time factor: compute seconds per second of audio produced."""
         return self.tts_seconds / self.audio_seconds if self.audio_seconds else float("nan")
+
+    @property
+    def speech_rtf(self) -> float:
+        """Real-time factor against speech alone, ignoring silence at either end.
+
+        Plain RTF divides by everything the model emitted, so padding inflates the denominator and
+        a model is rewarded for the silence it should not have produced. Dividing by the speech
+        instead measures the work done per second of speech actually delivered.
+        """
+        return self.tts_seconds / self.speech_seconds if self.speech_seconds else float("nan")
 
 
 @dataclass
@@ -358,9 +371,18 @@ class ProviderReport:
     @property
     def rtf(self) -> float:
         """Aggregate real-time factor across all scored phrases."""
-        synth = sum(r.tts_seconds for r in self.results if r.error is None)
-        audio = sum(r.audio_seconds for r in self.results if r.error is None)
+        timed = [r for r in self.results if r.error is None and not r.from_cache]
+        synth = sum(r.tts_seconds for r in timed)
+        audio = sum(r.audio_seconds for r in timed)
         return synth / audio if audio else float("nan")
+
+    @property
+    def speech_rtf(self) -> float:
+        """Aggregate real-time factor measured against speech rather than total output."""
+        timed = [r for r in self.results if r.error is None and not r.from_cache]
+        synth = sum(r.tts_seconds for r in timed)
+        speech = sum(r.speech_seconds for r in timed)
+        return synth / speech if speech else float("nan")
 
     def by_category(self) -> Dict[str, List[RoundTripResult]]:
         grouped: Dict[str, List[RoundTripResult]] = {}
@@ -546,6 +568,59 @@ def spoken_form(phrase: Phrase) -> str:
 
 
 TRIM_LEADING_SILENCE = False  # set by --trim-silence
+DURATIONS_ONLY = False  # set by --durations-only
+AUDIO_CACHE = None  # set by --audio-cache
+
+
+def audio_cache_name(provider: str, text: str, ext: str) -> str:
+    """Stable filename for one provider/phrase pair.
+
+    Deliberately not hash(): Python randomises it per process, so the existing --keep-audio names
+    differ between runs and could never be looked up again.
+    """
+    digest = hashlib.sha1(text.encode("utf-8")).hexdigest()[:16]
+    return f"{provider}_{digest}{ext}"
+
+
+def cached_synthesize(provider: str, text: str, cache_dir: Optional[str]) -> Tuple[bytes, str, bool]:
+    """Return audio for one phrase, reusing a cached file when there is one.
+
+    The third value says whether it came from cache. Timing must be taken only from real synthesis:
+    a cache hit measures a file read, and averaging that into RTF would report a model as far
+    faster than it is.
+    """
+    if cache_dir:
+        for ext in (".wav", ".mp3", ".flac", ".ogg"):
+            path = os.path.join(cache_dir, audio_cache_name(provider, text, ext))
+            if os.path.isfile(path) and os.path.getsize(path) > 0:
+                with open(path, "rb") as handle:
+                    return handle.read(), ext, True
+
+    audio_bytes, ext = synthesize(provider, text)
+    if cache_dir:
+        os.makedirs(cache_dir, exist_ok=True)
+        path = os.path.join(cache_dir, audio_cache_name(provider, text, ext))
+        tmp = path + ".part"
+        with open(tmp, "wb") as handle:
+            handle.write(audio_bytes)
+        os.replace(tmp, path)          # atomic, so an interrupted run leaves no half file to reuse
+    return audio_bytes, ext, False
+
+
+def speech_duration(audio: "np.ndarray", rate: int) -> float:
+    """Seconds between the first and last audible sample, so padding is not counted as output.
+
+    Uses the same amplitude threshold as trim_lead, so the two agree about where speech starts.
+    A clip with nothing above the threshold returns its full length rather than zero: that is a
+    model producing no speech at all, and reporting it as instant would flatter it enormously.
+    """
+    if audio.size == 0:
+        return 0.0
+    threshold = max(float(np.abs(audio).max()) * 0.02, 1e-4)
+    voiced = np.nonzero(np.abs(audio) > threshold)[0]
+    if voiced.size == 0:
+        return len(audio) / rate
+    return float(voiced[-1] - voiced[0] + 1) / rate
 
 
 def trim_lead(audio: "np.ndarray", rate: int, keep_ms: int = 100) -> "np.ndarray":
@@ -577,11 +652,12 @@ def round_trip(tts_provider: str, asr_provider, asr_name: str, phrase: Phrase,
             raise RuntimeError(f"preprocessing produced no speakable text from {phrase.raw!r}")
 
         start = time.monotonic()
-        audio_bytes, ext = synthesize(tts_provider, text)
+        audio_bytes, ext, result.from_cache = cached_synthesize(tts_provider, text, AUDIO_CACHE)
         result.tts_seconds = time.monotonic() - start
 
         audio, rate = decode_audio(audio_bytes, ext)
         result.audio_seconds = len(audio) / rate
+        result.speech_seconds = speech_duration(audio, rate)
         if result.audio_seconds < 0.2:
             raise RuntimeError(f"Audio suspiciously short ({result.audio_seconds:.2f}s)")
 
@@ -589,6 +665,12 @@ def round_trip(tts_provider: str, asr_provider, asr_name: str, phrase: Phrase,
             name = f"{tts_provider}_{phrase.category}_{abs(hash(text)) % 10000}{ext}"
             with open(os.path.join(keep_dir, name), "wb") as f:
                 f.write(audio_bytes)
+
+        if DURATIONS_ONLY:
+            # Timing needs no recogniser. Scored as a pass so the run aggregates normally; WER
+            # from this mode is meaningless and must not be read as a quality result.
+            result.wer = 0.0
+            return result
 
         scored = trim_lead(audio, rate) if TRIM_LEADING_SILENCE else audio
         audio_data = to_audio_data(resample(scored, rate, ASR_SAMPLE_RATE), ASR_SAMPLE_RATE)
@@ -789,6 +871,14 @@ def main() -> int:
     parser.add_argument("--trim-silence", action="store_true",
                         help="Trim leading silence before transcription, so a model is not "
                              "penalised for silence the recogniser hallucinates words onto.")
+    parser.add_argument("--audio-cache", metavar="DIR",
+                        help="Reuse synthesized audio from DIR, storing anything missing. Scoring "
+                             "and audio measurements can then be repeated without re-synthesizing; "
+                             "timing is taken only from phrases actually synthesized.")
+    parser.add_argument("--durations-only", action="store_true",
+                        help="Synthesize and measure durations without transcribing. Recording "
+                             "speech time needs no recogniser, so this re-measures timing across "
+                             "the corpus at a fraction of the cost of a scored sweep.")
     parser.add_argument("--phrase-index", action="append", dest="phrase_indices", type=int,
                         help="Restrict to these CORPUS indices (repeatable), so a slow provider "
                              "can be measured in chunks that each finish in reasonable time")
@@ -812,6 +902,18 @@ def main() -> int:
         global TRIM_LEADING_SILENCE
         TRIM_LEADING_SILENCE = True
         print("Leading silence trimmed before scoring (--trim-silence)")
+
+    if args.audio_cache:
+        global AUDIO_CACHE
+        AUDIO_CACHE = args.audio_cache
+        os.makedirs(AUDIO_CACHE, exist_ok=True)
+        print(f"Audio cache: {AUDIO_CACHE}")
+
+    if args.durations_only:
+        global DURATIONS_ONLY
+        DURATIONS_ONLY = True
+        print("Timing only, nothing transcribed (--durations-only): WER from this run is not a "
+              "quality measurement")
 
     if args.phrase_indices:
         selected = [CORPUS[i] for i in args.phrase_indices if 0 <= i < len(CORPUS)]
@@ -880,6 +982,13 @@ def main() -> int:
                                                if x.error is None), 4),
                     "audio_seconds": round(sum(x.audio_seconds for x in r.results
                                                if x.error is None), 4),
+                    # Speech alone, so RTF can be recomputed without crediting a model for the
+                    # silence it padded with. Summed for the same reason as the two above.
+                    "speech_seconds": round(sum(x.speech_seconds for x in r.results
+                                                if x.error is None), 4),
+                    # Timing covers only these; anything served from cache measures a file read
+                    "synthesized": sum(1 for x in r.results
+                                       if x.error is None and not x.from_cache),
                     "by_category": {
                         cat: {
                             "passed": sum(1 for x in items if x.passed),
