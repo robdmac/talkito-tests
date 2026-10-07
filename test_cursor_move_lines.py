@@ -190,6 +190,8 @@ def check_shutdown_chrome():
         'Press Ctrl- again to exit. Resume this session with:',
         'claude --resume 0638e43e-1817-4cb0-8b97-fed3f83e06e7',
         '⏵⏵ auto mode on (shift+tab to cycle) · ← for agents',
+        '◐ medium · /effort',
+        '● high · /effort',
     ]
     spoken = [
         'Claude Code v2.1.222',
@@ -206,6 +208,21 @@ def check_shutdown_chrome():
         if profile.should_skip(text, 0):
             failures.append(f'wrongly silenced: {text!r}')
     print(f'  [{"ok" if not failures else "FAIL"}] shutdown and status chrome filtered')
+    return failures
+
+
+def check_wrapped_last_word():
+    """A wrapped response ending in one word and a full stop must still be spoken."""
+    profile = get_profile('claude')
+    failures = []
+    for text in ('temporary.  ', 'it. Then the next sentence'):
+        if profile.should_skip(text, 0, continuation=True):
+            failures.append(f'continuation silenced: {text!r}')
+    # Spinner words keep being filtered, continuation or not
+    for text in ('Thinking…', '  Proofing...'):
+        if not profile.should_skip(text, 0, continuation=True):
+            failures.append(f'status word spoken as continuation: {text!r}')
+    print(f'  [{"ok" if not failures else "FAIL"}] wrapped one-word line kept, status words dropped')
     return failures
 
 
@@ -236,6 +253,7 @@ def main():
     failures.extend(check_word_spacing())
     failures.extend(check_mic_replacement())
     failures.extend(check_shutdown_chrome())
+    failures.extend(check_wrapped_last_word())
 
     if failures:
         print('\nFAILED:')
