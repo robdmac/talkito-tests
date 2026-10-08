@@ -112,6 +112,23 @@ def check_transcript():
         ended = [transcript.feed(chunk, 0)[1] for chunk in chunks][-1]
         expect(f'turn end then a new reply, {how}, ends replying', not ended, f'turn_ended={ended}')
 
+    # A turn's end and the start of a one-row reply, still held, in the same read leaves it replying
+    one_row = frames[0], frames[1].replace('• reply two second\r\n'.encode(), b'').replace(
+        b'\r\n\r\n\xe2\x80\xba', b'\r\n  Working (esc to interrupt)\r\n\xe2\x80\xba')
+    transcript = ScreenTranscript(10, 60, codex.screen_composer_pattern, codex.screen_live_pattern,
+                                  codex.screen_turn_end_pattern, busy_pattern=codex.screen_busy_pattern)
+    rows, ended = transcript.feed(b''.join(one_row), 0)
+    expect('turn end then a one-row reply in one read ends replying', not ended and transcript.busy,
+           f'turn_ended={ended} busy={transcript.busy} rows={rows}')
+
+    # Once the program has exited, a reply left under its busy row is all there will be
+    transcript = ScreenTranscript(10, 60, codex.screen_composer_pattern, codex.screen_live_pattern,
+                                  codex.screen_turn_end_pattern, busy_pattern=codex.screen_busy_pattern)
+    transcript.feed('\x1b[?2026h\x1b[H\x1b[2J• the whole reply\r\n\r\n  Working (esc to interrupt)'
+                    '\r\n\r\n› \x1b[?2026l'.encode(), 0)
+    rows, _ = transcript.flush_idle(float('inf'))
+    expect('final flush releases a reply under a busy row', rows == ['• the whole reply'], f'released {rows!r}')
+
     # An empty Codex composer is just its marker once trailing blanks are dropped
     transcript = ScreenTranscript(10, 60, codex.screen_composer_pattern, codex.screen_live_pattern,
                                   codex.screen_turn_end_pattern)
@@ -164,8 +181,10 @@ def check_listening():
     # (the rows that follow are its exit banner, once the session is quit)
     test_codex_screen.ROWS, test_codex_screen.COLS = 40, 120
     data = open(os.path.join(FIXTURES, 'opencode_v11835_screen.bin'), 'rb').read()
+    # Up to quitting, which in one big read would otherwise land with the turn's end and supersede it
+    session = data[:data.index(b'\x1b[?1049l')]
     for how, chunks in [('frames', [c for c in re.split(rb'(?<=\x1b\[\?2026l)', data) if c]),
-                        ('16KB reads', [data[i:i + 16384] for i in range(0, len(data), 16384)])]:
+                        ('16KB reads', [session[i:i + 16384] for i in range(0, len(session), 16384)])]:
         states = spy_listening(lambda: test_codex_screen.replay(data, chunks, profile_name='opencode'))
         end = next((i for i, (line, detected, _) in enumerate(states) if detected and not line), None)
         after = [line for line, _, _ in states[end + 1:]] if end is not None else []
