@@ -182,8 +182,17 @@ def check_transcript():
     transcript.resize(8, 30)
     rows, _ = transcript.feed(b'\x1b[H\x1b[2Jone two three four five\r\nsix seven eight nine ten\r\nheld\r\n'
                               b'A new reply\r\nstill painting', 0)
-    expect('re-wrapped rows are not read out again after a resize', [r for r in rows if r.strip()] == ['A new reply'],
-           f'got {rows}')
+    expect('re-wrapped rows are not read out again after a resize, but the held row is',
+           [r.strip() for r in rows if r.strip()] == ['held', 'A new reply'], f'got {rows}')
+
+    # A held row re-wrapped up beside rows already read out is still read, if with a few words again
+    transcript = ScreenTranscript(8, 40)
+    transcript.feed(b'\x1b[H\x1b[2Jone two three four five six seven\r\neight nine ten\r\neleven', 0)
+    transcript.resize(8, 50)
+    rows, _ = transcript.feed(b'\x1b[H\x1b[2Jone two three four five six seven eight nine\r\nten eleven\r\n'
+                              b'A new reply\r\nstill painting', 0)
+    expect('a held row re-wrapped beside spoken words is still read after a resize',
+           any('eleven' in r for r in rows), f'got {rows}')
 
     # pi marks neither its prompt echo nor its reply: what appears before it shows it is working is the echo,
     # and the transcript ends at the upper of the two rules around its input box
