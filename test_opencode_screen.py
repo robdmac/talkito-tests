@@ -34,7 +34,8 @@ def main():
     frames = [c for c in re.split(rb'(?<=\x1b\[\?2026l)', data) if c]
     failures = []
 
-    for how, chunks in (('frames', frames), ('7b chunks', [data[i:i + 7] for i in range(0, len(data), 7)])):
+    for how, chunks in (('frames', frames), ('7b chunks', [data[i:i + 7] for i in range(0, len(data), 7)]),
+                        ('16KB reads', [data[i:i + 16384] for i in range(0, len(data), 16384)])):
         spoken = replay(data, chunks, profile_name='opencode')
         text = ' '.join(spoken)
         problems = [f'missing {p!r}' for p in PARAGRAPHS + BULLETS if p not in text]

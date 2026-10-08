@@ -42,7 +42,17 @@ CASES = {
         'The capital of Peru is Lima.',
         "widely considered the country's national culinary pride.",
     ]),
+    # OpenCode v1.18.35 on a slow model that stalled for up to 25s part way through rows, with its
+    # status row's last letter painted over ('esc interrup▀')
+    'opencode_v11835_stall.session': ('opencode', [
+        'making Lisbon Portugal',
+        'balancing its imperial past with a forward-looking identity amid seismic history and Atlantic connections.',
+        "Belém Tower: 16th-century Manueline tower marking Portugal's Age of Discovery and maritime heritage.",
+        "Jerónimos Monastery: Ornate late-Gothic/Manueline monastery built to commemorate Vasco da Gama's voyages.",
+    ]),
 }
+# Rows read out before the model had finished them
+PARTIAL = {'opencode_v11835_stall.session': ['contemporary energy.', 'Bel.', 'Ornate late.', '**Bel']}
 # Chrome that used to be read out: status notices, spinner words, tips and the suggested next prompt
 NEVER = ['Fast mode', 'usage credits', 'Tip:', 'thinking', 'tokens)', 'esc to interrupt', 'auto mode',
          'what language do they speak', 'flow:', 'plugin.json', 'esc to cancel', 'Shift+Tab', 'for shortcuts']
@@ -56,7 +66,7 @@ def main():
                    for e in SessionRecorder.parse_file(os.path.join(FIXTURES, name)) if e['event_type'] == 'OUTPUT']
         text = ' '.join(' '.join(test_codex_screen.replay_timed(entries, profile)).split())
         problems = [f'missing {e!r}' for e in expected if e not in text]
-        problems += [f'spoke {n!r}' for n in NEVER if n in text]
+        problems += [f'spoke {n!r}' for n in NEVER + PARTIAL.get(name, []) if n in text]
         problems += [f'{e!r} spoken {text.count(e)} times' for e in expected if text.count(e) > 1]
         print(f'  [{"ok" if not problems else "FAIL"}] {name}')
         failures.extend(f'{name}: {p}' for p in problems)

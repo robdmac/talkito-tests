@@ -117,6 +117,8 @@ def check_response(data: bytes):
     results = {
         'frames': replay(data, frames),
         '7b chunks': replay(data, [data[i:i + 7] for i in range(0, len(data), 7)]),
+        # A busy agent fills a whole read with several frames, each painting over the last
+        '16KB reads': replay(data, [data[i:i + 16384] for i in range(0, len(data), 16384)]),
     }
     for how, spoken in results.items():
         text = ' '.join(spoken)
@@ -132,7 +134,7 @@ def check_response(data: bytes):
     # The startup banner is painted outside synchronized updates around an animated logo, so only
     # the reply itself is required to come out the same however the output is split
     replies = [[t for t in spoken if '•' in t] for spoken in results.values()]
-    same = replies[0] == replies[1]
+    same = all(reply == replies[0] for reply in replies)
     if not same:
         failures.append('chunking changed what was spoken')
     print(f'  [{"ok" if same else "FAIL"}] chunk size does not change the reply')

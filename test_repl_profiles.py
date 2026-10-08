@@ -15,6 +15,9 @@ CASES = {
     'python': (b'>>> for i in range(3): print("row", i)\r\n... \r\nrow 0\r\nrow 1\r\nrow 2\r\n>>> ',
                ['row 0', 'row 1', 'row 2']),
     # A lone number is the answer, and the same answer twice is said twice
+    # Lines alike enough to read as a repaint of the one before are each still output
+    'python3 alike': (b'>>> for i in range(3): print("result", i)\r\n... \r\nresult 0\r\nresult 1\r\nresult 2\r\n>>> ',
+                      ['result 0', 'result 1', 'result 2']),
     'python3': (b'>>> 2 + 3\r\n5\r\n>>> 2 + 3\r\n5\r\n>>> -7 // 2\r\n-4\r\n'
                 b'>>> print("ok")\r\nok\r\n>>> print("ok")\r\nok\r\n>>> ',
                 ['5', '5', '-4', 'ok', 'ok']),
@@ -30,13 +33,17 @@ CASES = {
 def replay(profile_name: str, data: bytes):
     """Run output through the line reader as if the prompt had just been shown; return what was sent."""
     saved = (core.active_profile, core.terminal, core.tts.queue_for_speech, core.asr_state.waiting_for_input)
+    queue_for_speech = core.tts.queue_for_speech
     sent = []
 
     def capture(text, *args, similarity_checks=True, **kwargs):
-        sent.append((text, similarity_checks))
+        # Through the real queue, which also drops lines numbered at or below the last one spoken
+        if queue_for_speech(text, *args, similarity_checks=similarity_checks, **kwargs):
+            sent.append((text, similarity_checks))
         return text
 
-    core.active_profile = get_profile(profile_name)
+    core.tts.reset_tts_cache()
+    core.active_profile = get_profile(profile_name.split()[0])
     core.terminal = core.TerminalState()
     core.tts.queue_for_speech = capture
     # The prompt before the command has been seen, which used to silence everything after it
@@ -49,6 +56,7 @@ def replay(profile_name: str, data: bytes):
         core.send_pending_text()
     finally:
         core.active_profile, core.terminal, core.tts.queue_for_speech, core.asr_state.waiting_for_input = saved
+        core.tts.reset_tts_cache()
     return sent
 
 
