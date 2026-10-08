@@ -40,6 +40,19 @@ out.flush()
 open(__file__ + '.exited', 'w').write(repr(time.time()))
 '''
 
+# Writes its terminal's width to a file each time it is told the size changed, as TUIs redraw on SIGWINCH.
+# Like Gemini CLI, it relaunches itself and the relaunched child is the one drawing
+FAKE_RESIZER = r'''#!/usr/bin/env python3
+import os, signal, subprocess, sys, time
+if len(sys.argv) == 1:
+    sys.exit(subprocess.call([sys.executable, __file__, 'child']))
+def note(*_):
+    open(__file__ + '.cols', 'a').write(f'{os.get_terminal_size(sys.stdout.fileno()).columns}\n')
+signal.signal(signal.SIGWINCH, note)
+open(__file__ + '.ready', 'w').close()
+time.sleep(20)
+'''
+
 
 def check_screen():
     """A colour change at the last column leaves the wrap pending; moving the cursor cancels it."""
@@ -129,6 +142,26 @@ def check_transcript():
     rows, _ = transcript.flush_idle(float('inf'))
     expect('final flush releases a reply under a busy row', rows == ['• the whole reply'], f'released {rows!r}')
 
+    # A program without sync markers that exits straight after its reply, before a quiet read, is still heard
+    claude = get_profile('claude')
+    transcript = ScreenTranscript(10, 60, claude.screen_composer_pattern, claude.screen_live_pattern,
+                                  claude.screen_turn_end_pattern, quiet_seconds=0.05,
+                                  busy_pattern=claude.screen_busy_pattern)
+    transcript.feed('\x1b[H\x1b[2J⏺ the whole reply\r\n'.encode(), 0)
+    rows, _ = transcript.flush_idle(float('inf'))
+    expect('final flush releases a reply exited before a quiet read', rows == ['⏺ the whole reply'],
+           f'released {rows!r}')
+
+    # A program that exits part way through a synchronized update, even its first, leaves what it painted
+    for how, before in (('first', b''), ('later', frames[0])):
+        transcript = ScreenTranscript(10, 60, codex.screen_composer_pattern, codex.screen_live_pattern,
+                                      codex.screen_turn_end_pattern, busy_pattern=codex.screen_busy_pattern)
+        transcript.feed(before, 0)
+        transcript.feed('\x1b[?2026h\x1b[H\x1b[2J• an unfinished reply\r\n\r\n› '.encode(), 0)
+        rows, _ = transcript.flush_idle(float('inf'))
+        expect(f'final flush releases a reply in an unclosed {how} update', '• an unfinished reply' in rows,
+               f'released {rows!r}')
+
     # An empty Codex composer is just its marker once trailing blanks are dropped
     transcript = ScreenTranscript(10, 60, codex.screen_composer_pattern, codex.screen_live_pattern,
                                   codex.screen_turn_end_pattern)
@@ -142,6 +175,36 @@ def check_transcript():
         '\x1b[H\x1b[2J> question\r\n✦ The answer.']]
     expect('busy row going away ends the turn', [ended for _, ended in results] == [False, True], f'got {results}')
     expect('and releases the last row', results[1][0][-1:] == ['✦ The answer.'], f'got {results[1][0]}')
+
+    # After a resize the program re-wraps its whole transcript to the new width; none of that is new
+    transcript = ScreenTranscript(8, 40)
+    transcript.feed(b'\x1b[H\x1b[2Jone two three four five six seven\r\neight nine ten\r\nheld', 0)
+    transcript.resize(8, 30)
+    rows, _ = transcript.feed(b'\x1b[H\x1b[2Jone two three four five\r\nsix seven eight nine ten\r\nheld\r\n'
+                              b'A new reply\r\nstill painting', 0)
+    expect('re-wrapped rows are not read out again after a resize', [r for r in rows if r.strip()] == ['A new reply'],
+           f'got {rows}')
+
+    # pi marks neither its prompt echo nor its reply: what appears before it shows it is working is the echo,
+    # and the transcript ends at the upper of the two rules around its input box
+    pi = get_profile('pi')
+    rules = '\x1b[8;1H──────────\r\n\r\n──────────\r\n~/dir\r\n0.0%/272k'
+    working = rules.replace('──────────', '── ⠋ Working', 1)
+    frames = [f'\x1b[?2026h\x1b[H\x1b[2J{body}\x1b[?2026l'.encode() for body in [
+        f' Pi v1.1.0\r\n\r\n echoed prompt that\r\n wraps{rules}',
+        f' Pi v1.1.0\r\n\r\n echoed prompt that\r\n wraps{working}',
+        f' Pi v1.1.0\r\n\r\n echoed prompt that\r\n wraps\r\n\r\n The reply.{working}',
+        f' Pi v1.1.0\r\n\r\n echoed prompt that\r\n wraps\r\n\r\n The reply.{rules}']]
+    for how, chunks in (('frames', frames), ('one read', [b''.join(frames[:2]), *frames[2:]]),
+                        # Output can stop part way through the frame that shows it working
+                        ('split frame', [frames[0], frames[1][:-30], frames[1][-30:], *frames[2:]])):
+        transcript = ScreenTranscript(10, 40, pi.screen_composer_pattern, busy_pattern=pi.screen_busy_pattern,
+                                      margin=pi.screen_margin, composer_edges=pi.screen_composer_edges,
+                                      echo_until_busy=pi.screen_echo_until_busy)
+        results = [transcript.feed(chunk, 0) for chunk in chunks]
+        spoken = [row for rows, _ in results for row in rows if row.strip()]
+        expect(f'pi echo is not read out, only the reply, {how}', spoken == ['The reply.'], f'got {spoken}')
+        expect(f'pi turn ends once it stops working, {how}', [e for _, e in results][-1], f'got {results}')
     return failures
 
 
@@ -176,6 +239,18 @@ def check_listening():
         print(f'  [{"ok" if ok else "FAIL"}] {name}: {len(ends)} turn ends, listening at the end')
         if not ok:
             failures.append(f'{name}: {len(ends)} turn ends, listening={states[-1][2] if states else None}')
+
+    # pi shows it is working only by a spinner on its input box rule, so that alone ends listening and brings it back
+    test_codex_screen.ROWS, test_codex_screen.COLS = 50, 120
+    entries = [(e['timestamp'], e['raw_bytes']) for e in SessionRecorder.parse_file(
+        os.path.join(FIXTURES, 'pi_v110_multi_turn.session')) if e['event_type'] == 'OUTPUT']
+    states = spy_listening(lambda: test_codex_screen.replay_timed(entries, 'pi'))
+    ends = [i for i, (line, detected, _) in enumerate(states) if detected and not line]
+    replying = [waiting for line, detected, waiting in states if line.strip() and not detected]
+    ok = len(ends) == 2 and states[-1][2] and replying and not any(replying)
+    print(f'  [{"ok" if ok else "FAIL"}] pi multi turn: {len(ends)} turn ends, not listening while it replies')
+    if not ok:
+        failures.append(f'pi multi turn: {len(ends)} turn ends, listening while replying {replying}')
 
     # OpenCode's footer row is released with the turn end, so it no longer reads as a reply afterwards
     # (the rows that follow are its exit banner, once the session is quit)
@@ -243,8 +318,46 @@ def check_exit():
     return [] if ok else [f'exit: last row not spoken, spoke {spoken!r}']
 
 
+def check_resize():
+    """A resize reaches the program, which shares talkito's process group so the kernel does not tell it."""
+    workdir = tempfile.mkdtemp(prefix='talkito-resize-')
+    program = os.path.join(workdir, 'resizer')
+    with open(program, 'w') as f:
+        f.write(FAKE_RESIZER)
+    os.chmod(program, os.stat(program).st_mode | stat.S_IEXEC)
+    env = dict(os.environ, TERM='xterm-256color')
+    pid, fd = pty.fork()
+    if pid == 0:
+        os.chdir(REPO)
+        os.execvpe(sys.executable, [sys.executable, '-m', 'talkito', '--log-file', os.path.join(workdir, 'talkito.log'),
+                                    '--asr-mode', 'off', '--tts-provider', 'system', program], env)
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack('HHHH', 40, 120, 0, 0))
+    resized, seen = False, []
+    end = time.time() + 20
+    while time.time() < end and '98' not in seen:
+        if not resized and os.path.exists(program + '.ready'):
+            time.sleep(0.5)
+            fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack('HHHH', 40, 100, 0, 0))
+            os.kill(pid, signal.SIGWINCH)
+            resized = True
+        ready, _, _ = select.select([fd], [], [], 0.05)
+        if ready:
+            try:
+                os.read(fd, 65536)
+            except OSError:
+                break
+        if os.path.exists(program + '.cols'):
+            seen = open(program + '.cols').read().split()
+    os.kill(pid, signal.SIGKILL)
+    os.waitpid(pid, 0)
+    # talkito gives the program two columns fewer than its own terminal
+    ok = '98' in seen
+    print(f'  [{"ok" if ok else "FAIL"}] a resize reaches the program')
+    return [] if ok else [f'resize: program saw widths {seen!r}, expected 98']
+
+
 def main():
-    failures = check_screen() + check_transcript() + check_listening() + check_exit()
+    failures = check_screen() + check_transcript() + check_listening() + check_exit() + check_resize()
     if failures:
         print('\nFAILED:')
         for failure in failures:

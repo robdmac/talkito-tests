@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-"""Checks how slashes in agent output are spoken: real paths shrink to the filename, other pairs don't."""
+"""Checks how slashes and trailing brackets in agent output are spoken."""
 
 import os
 import sys
@@ -25,6 +25,11 @@ CASES = [
     ('open ~/notes/todo.txt', 'open todo dot txt'),
     ('src/components/Button.tsx', 'Button dot tsx'),
     ('run /help first', 'run slash help first'),
+    # a trailing bracketed hint is dropped, a trailing bracketed sentence is kept
+    ('Thinking (esc to interrupt)', 'Thinking'),
+    ('Updated 3 files (2 skipped)', 'Updated 3 files'),
+    ('It is the longest river. (Some say the Amazon is longer.)', 'It is the longest river. (Some say the Amazon is longer.)'),
+    ('Done. (Really!)', 'Done. (Really!)'),
 ]
 
 

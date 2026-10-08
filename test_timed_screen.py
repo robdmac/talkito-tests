@@ -50,12 +50,26 @@ CASES = {
         "Belém Tower: 16th-century Manueline tower marking Portugal's Age of Discovery and maritime heritage.",
         "Jerónimos Monastery: Ornate late-Gothic/Manueline monastery built to commemorate Vasco da Gama's voyages.",
     ]),
+    # pi v1.1.0, whose prompt echo and replies carry no marker at all; its reasoning summary is shown and read
+    'pi_v110_long_reply.session': ('pi', [
+        "Lisbon's history stretches back more than two millennia.",
+        'a center of maritime trade and exploration during the fifteenth and sixteenth centuries.',
+        'which restored democracy.',
+        'Belém Tower — a sixteenth-century riverside fortification.',
+        'São Jorge Castle — a hilltop fortress overlooking the city.',
+    ]),
+    'pi_v110_multi_turn.session': ('pi', [
+        'The capital of Peru is Lima.',
+        'typically served with onion, chili, and sweet potato.',
+    ]),
 }
 # Rows read out before the model had finished them
 PARTIAL = {'opencode_v11835_stall.session': ['contemporary energy.', 'Bel.', 'Ornate late.', '**Bel']}
 # Chrome that used to be read out: status notices, spinner words, tips and the suggested next prompt
 NEVER = ['Fast mode', 'usage credits', 'Tip:', 'thinking', 'tokens)', 'esc to interrupt', 'auto mode',
-         'what language do they speak', 'flow:', 'plugin.json', 'esc to cancel', 'Shift+Tab', 'for shortcuts']
+         'what language do they speak', 'flow:', 'plugin.json', 'esc to cancel', 'Shift+Tab', 'for shortcuts',
+         # pi's banner, the echo of the prompt and its working spinner
+         'Pi can explain', 'escape interrupt', 'Write two paragraphs', 'In one sentence', 'Working']
 
 
 def main():

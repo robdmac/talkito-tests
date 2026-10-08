@@ -62,6 +62,16 @@ AGENTS = {
         # Replies carry no marker; they start at the first row that is not the prompt's ┃ block
         'reply_start': re.compile(r'^\s*(?!┃|\+ Thought)\S'),
     },
+    'pi': {
+        'ready': re.compile(r'^──'),
+        # The echo is the prompt with a space of padding, wrapped like any other row
+        'prompt_echo': ' ',
+        'echo_ends_at_blank': True,
+        'reply_end': re.compile(r'^──'),
+        'chrome': re.compile(r'^$'),
+        # Replies carry no marker
+        'reply_start': re.compile(r'^\s*\S'),
+    },
 }
 REPLY_START = re.compile(r'^\s*[•⏺]')
 
@@ -249,6 +259,10 @@ class Turn:
             if not echoes:
                 return None
             begin = echoes[-1] + 1
+            if self.spec.get('echo_ends_at_blank'):
+                # A long prompt wraps onto more rows, all of them the echo
+                while begin < len(lines) and lines[begin].strip():
+                    begin += 1
         rows = []
         for row in lines[begin:]:
             if self.spec['reply_end'].search(row):
@@ -444,7 +458,7 @@ def run_agent(agent: str, scenarios, rows: int, cols: int, audible: bool, workdi
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument('--agent', choices=['codex', 'claude', 'opencode', 'gemini', 'all'], default='all')
+    parser.add_argument('--agent', choices=['codex', 'claude', 'opencode', 'gemini', 'pi', 'all'], default='all')
     parser.add_argument('--opencode-model', default='opencode/big-pickle',
                         help='provider/model for opencode (the default needs no credentials)')
     parser.add_argument('--scenario', nargs='+', choices=sorted(SCENARIOS), default=list(SCENARIOS))
@@ -456,7 +470,7 @@ def main():
 
     workdir = args.keep or tempfile.mkdtemp(prefix='talkito-live-')
     os.makedirs(workdir, exist_ok=True)
-    agents = ['codex', 'claude', 'opencode', 'gemini'] if args.agent == 'all' else [args.agent]
+    agents = ['codex', 'claude', 'opencode', 'gemini', 'pi'] if args.agent == 'all' else [args.agent]
     agent_args = {'opencode': ['-m', args.opencode_model]}
     results = [run_agent(a, args.scenario, args.rows, args.cols, args.audible, workdir, agent_args.get(a, ()))
                for a in agents]
