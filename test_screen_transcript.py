@@ -194,6 +194,34 @@ def check_transcript():
     expect('a held row re-wrapped beside spoken words is still read after a resize',
            any('eleven' in r for r in rows), f'got {rows}')
 
+    # Words read out before do not make a held row old: the same words in another order say something else
+    transcript = ScreenTranscript(8, 70)
+    transcript.feed(b'\x1b[H\x1b[2JAlice gives Bob a book, then Carol gives Dave a pen.\r\n'
+                    b'Dave gives Carol a book, then Bob gives Alice a pen.', 0)
+    transcript.resize(8, 60)
+    rows, _ = transcript.feed(b'\x1b[H\x1b[2JAlice gives Bob a book, then Carol gives Dave a pen.\r\n'
+                              b'Dave gives Carol a book, then Bob gives Alice a pen.\r\nA new reply\r\nstill painting', 0)
+    expect('a held row of reordered spoken words is still read after a resize',
+           [r.strip() for r in rows if r.strip()] == ['Dave gives Carol a book, then Bob gives Alice a pen.', 'A new reply'],
+           f'got {rows}')
+
+    # A program that breaks lines mid-word re-wraps at new places within words, which are still not new
+    transcript = ScreenTranscript(8, 20)
+    transcript.feed(b'\x1b[H\x1b[2Jthe rainforest is v\r\nast and old\r\nheld', 0)
+    transcript.resize(8, 30)
+    rows, _ = transcript.feed(b'\x1b[H\x1b[2Jthe rainfo\r\nrest is vast and old\r\nheld\r\nA new reply\r\nstill', 0)
+    expect('rows re-wrapped mid-word are not read out again after a resize',
+           [r.strip() for r in rows if r.strip()] == ['held', 'A new reply'], f'got {rows}')
+
+    # A row caught half repainted keeps the old row's last cells past a gap, which are not new either
+    transcript = ScreenTranscript(8, 40)
+    transcript.feed(b'\x1b[H\x1b[2Jone two three four five six seven\r\neight nine ten\r\nheld', 0)
+    transcript.resize(8, 30)
+    rows, _ = transcript.feed(b'\x1b[H\x1b[2Jone two three four five     en\r\nsix seven eight nine ten\r\nheld\r\n'
+                              b'A new reply\r\nstill painting', 0)
+    expect('a half repainted row is not read out again after a resize',
+           [r.strip() for r in rows if r.strip()] == ['held', 'A new reply'], f'got {rows}')
+
     # pi marks neither its prompt echo nor its reply: what appears before it shows it is working is the echo,
     # and the transcript ends at the upper of the two rules around its input box
     pi = get_profile('pi')
