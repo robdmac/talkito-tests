@@ -12,6 +12,7 @@ records every line handed to the TTS engine, which is what gets checked.
 
 import argparse
 import fcntl
+import json
 import os
 import pty
 import re
@@ -25,6 +26,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from talkito.profiles import DRAWING_ROW, OPENCODE_FOOTER, OPENCODE_TABS, get_profile
 from talkito.screen import Screen
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -57,10 +59,11 @@ AGENTS = {
     'opencode': {
         'ready': re.compile(r'^\s*╹▀'),
         'prompt_echo': '  ┃  ',
-        'reply_end': re.compile(r'^\s*▣.*\d+(?:\.\d+)?s\s*$|^\s*╹▀'),
-        'chrome': re.compile(r'^\s*(?:┃|\+ Thought|▣)'),
+        'reply_end': re.compile(f'{OPENCODE_FOOTER}|^\\s*╹▀'),
+        # Since 2.3 a row of session tabs heads the screen, and an extension may draw a scene above the input box
+        'chrome': re.compile(f'^\\s*(?:┃|\\+ Thought|\\+ \\d+ thoughts?$|▣)|{OPENCODE_FOOTER}|{OPENCODE_TABS}|{DRAWING_ROW}'),
         # Replies carry no marker; they start at the first row that is not the prompt's ┃ block
-        'reply_start': re.compile(r'^\s*(?!┃|\+ Thought)\S'),
+        'reply_start': re.compile(r'^\s*(?!┃|\+ Thought|\+ \d+ thought)\S'),
     },
     'pi': {
         'ready': re.compile(r'^──'),
@@ -81,7 +84,7 @@ NO_TOOLS = ' Do not run any commands or use any tools.'
 class Session:
     """talkito running an agent in a PTY, with a virtual screen of everything it has drawn."""
 
-    def __init__(self, agent: str, rows: int, cols: int, workdir: str, audible: bool, agent_args=()):
+    def __init__(self, agent: str, rows: int, cols: int, workdir: str, audible: bool, agent_args=(), agent_env=None):
         self.agent = agent
         self.rows, self.cols = rows, cols
         self.log_path = os.path.join(workdir, f'{agent}.log')
@@ -93,6 +96,9 @@ class Session:
         self.session = open(self.session_path, 'wb')
         self.started = time.time()
         self.last_output = time.time()
+        # When the screen's words last changed: an animation of blocks or glyphs beside them is not work
+        self.last_text_change = time.time()
+        self._text = ''
 
         env = os.environ.copy()
         env['TERM'] = 'xterm-256color'
@@ -107,6 +113,7 @@ class Session:
                 f.write('#!/bin/sh\nexit 0\n')
             os.chmod(say, 0o755)
             env['PATH'] = quiet_bin + os.pathsep + env['PATH']
+        env.update(agent_env or {})
 
         cmd = ['talkito', '--log-file', self.log_path, '--asr-mode', 'off', '--tts-provider', 'system', agent,
                *agent_args]
@@ -136,17 +143,20 @@ class Session:
             self.session.write(f'{time.time() - self.started:.6f} OUTPUT {len(data):04x} '.encode() + data + b'\x00')
             self.screen.feed(data)
             self.last_output = time.time()
+            text = re.sub(r'\W+', '', ''.join(self.screen.lines()))
+            if text != self._text:
+                self._text, self.last_text_change = text, self.last_output
             if b'\x1b[6n' in data:
                 os.write(self.fd, f'\x1b[{self.screen.cursor_row + 1};{self.screen.cursor_col + 1}R'.encode())
         return True
 
     def wait_until(self, condition, timeout: float, quiet: float = 0.0) -> bool:
-        """Pump until condition() holds and output has been quiet for `quiet` seconds."""
+        """Pump until condition() holds and the screen's text has been still for `quiet` seconds."""
         end = time.time() + timeout
         while time.time() < end:
             if not self.pump(0.5):
                 return False
-            if condition() and time.time() - self.last_output >= quiet:
+            if condition() and time.time() - self.last_text_change >= quiet:
                 return True
         return False
 
@@ -271,7 +281,12 @@ class Turn:
         return None
 
     def wait(self, timeout: float = 180) -> bool:
-        done = self.session.wait_until(lambda: self._reply_rows() is not None, timeout, quiet=4)
+        # Words can sit still while the agent thinks, its spinner and any scene beside them moving on, so
+        # a reply is done only once the agent no longer shows it is working
+        busy = re.compile(get_profile(self.session.agent).screen_busy_pattern or r'(?!)')
+        done = self.session.wait_until(
+            lambda: self._reply_rows() is not None and not any(busy.search(row) for row in self.session.lines()),
+            timeout, quiet=4)
         self.reply_rows = self._reply_rows() or []
         # The line reader holds text for up to two seconds before handing it to the speech queue
         self.session.pump(4)
@@ -434,11 +449,11 @@ SCENARIOS = {
 }
 
 
-def run_agent(agent: str, scenarios, rows: int, cols: int, audible: bool, workdir: str, agent_args=()) -> bool:
+def run_agent(agent: str, scenarios, rows: int, cols: int, audible: bool, workdir: str, agent_args=(), agent_env=None) -> bool:
     print(f'\n===== {agent} (logs in {workdir})')
     passed = True
     for name in scenarios:
-        session = Session(agent, rows, cols, workdir, audible, agent_args)
+        session = Session(agent, rows, cols, workdir, audible, agent_args, agent_env)
         try:
             if not session.wait_until(lambda: any(AGENTS[agent]['ready'].search(r) for r in session.lines()),
                                       90, quiet=3):
@@ -471,8 +486,9 @@ def main():
     workdir = args.keep or tempfile.mkdtemp(prefix='talkito-live-')
     os.makedirs(workdir, exist_ok=True)
     agents = ['codex', 'claude', 'opencode', 'gemini', 'pi'] if args.agent == 'all' else [args.agent]
-    agent_args = {'opencode': ['-m', args.opencode_model]}
-    results = [run_agent(a, args.scenario, args.rows, args.cols, args.audible, workdir, agent_args.get(a, ()))
+    # OpenCode 2.3 takes a model only from its config; its TUI no longer has -m
+    agent_env = {'opencode': {'OPENCODE_CONFIG_CONTENT': json.dumps({'model': args.opencode_model})}}
+    results = [run_agent(a, args.scenario, args.rows, args.cols, args.audible, workdir, agent_env=agent_env.get(a))
                for a in agents]
     print('\nAll scenarios passed' if all(results) else '\nSome scenarios failed')
     return 0 if all(results) else 1

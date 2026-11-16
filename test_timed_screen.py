@@ -25,6 +25,15 @@ CASES = {
         'Jerónimos Monastery: a masterpiece of Manueline architecture',
         "São Jorge Castle: a Moorish-era hilltop castle overlooking the Alfama district",
     ]),
+    # Claude Code v2.1.325 with a mod's animated band above the prompt (flow), repainted many times a
+    # second; it is no part of the transcript and used to be read out frame by frame, the reply with it
+    'claude_v21325_band_long_reply.session': ('claude', [
+        "Lisbon is one of Europe's oldest cities, older than London, Paris and Rome.",
+        "In 1147 Afonso Henriques recaptured Lisbon with help from crusaders",
+        'The Marquis of Pombal then rebuilt the Baixa district on a modern grid.',
+        'Belém Tower: a 16th-century Manueline fortress on the Tagus that guarded the harbour entrance.',
+        "São Jorge Castle: a Moorish-era castle on Lisbon's highest hill, with views over the Alfama district and the river.",
+    ]),
     'claude_v21293_multi_turn.session': ('claude', [
         'Lima is the capital of Peru.',
         'cured in fresh lime juice with red onion, chili (ají), and cilantro.',
@@ -50,6 +59,13 @@ CASES = {
         "Belém Tower: 16th-century Manueline tower marking Portugal's Age of Discovery and maritime heritage.",
         "Jerónimos Monastery: Ornate late-Gothic/Manueline monastery built to commemorate Vasco da Gama's voyages.",
     ]),
+    # OpenCode v2.3.0: a row of session tabs heads the screen, the turn footer lost its ▣, reasoning
+    # collapses to '+ 1 thought', and flow draws its scene just above the input box
+    'opencode_v230_multi_turn.session': ('opencode', [
+        'The capital of Peru is Lima.',
+        "A famous Peruvian dish is ceviche, made from fresh raw fish cured in lime juice.",
+        "It's typically mixed with onions, chili peppers, and cilantro, and served with sweet potato or corn.",
+    ]),
     # pi v1.1.0, whose prompt echo and replies carry no marker at all; its reasoning summary is shown and read
     'pi_v110_long_reply.session': ('pi', [
         "Lisbon's history stretches back more than two millennia.",
@@ -69,7 +85,11 @@ PARTIAL = {'opencode_v11835_stall.session': ['contemporary energy.', 'Bel.', 'Or
 NEVER = ['Fast mode', 'usage credits', 'Tip:', 'thinking', 'tokens)', 'esc to interrupt', 'auto mode',
          'what language do they speak', 'flow:', 'plugin.json', 'esc to cancel', 'Shift+Tab', 'for shortcuts',
          # pi's banner, the echo of the prompt and its working spinner
-         'Pi can explain', 'escape interrupt', 'Write two paragraphs', 'In one sentence', 'Working']
+         'Pi can explain', 'escape interrupt', 'Write two paragraphs', 'In one sentence', 'Working',
+         # a mod's band above Claude Code's prompt: its collapse mark and its drawing
+         '[-]', '⠄', '▒',
+         # OpenCode 2.3's session tabs, its turn footer and its collapsed reasoning
+         'New session', 'ttft', 'tok/s', 'thought']
 
 
 def main():
