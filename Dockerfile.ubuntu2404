@@ -1,0 +1,53 @@
+# Dockerfile for testing talkito installation on Ubuntu 24.04
+FROM ubuntu:24.04
+
+# Avoid interactive prompts during package installation
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install Python and system dependencies
+RUN apt-get update && apt-get install -y \
+    python3 \
+    python3-pip \
+    python3-venv \
+    git \
+    ffmpeg \
+    portaudio19-dev \
+    build-essential \
+    # Fix for clang++ not finding C++ headers on Ubuntu 24.04
+    # See: https://askubuntu.com/questions/1525087/after-upgrading-ubuntu-to-24-04-lts-clang-does-not-work-properly
+    g++-14 \
+    libstdc++-14-dev \
+    curl \
+    wget \
+    ca-certificates \
+    gnupg \
+    # Azure Speech SDK dependencies
+    libasound2-dev \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set working directory
+WORKDIR /app
+
+# Copy the entire talkito project
+COPY . /app/
+
+# Create and activate virtual environment (required on Ubuntu 24.04 due to PEP 668)
+RUN python3 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Upgrade pip
+RUN pip install --upgrade pip
+
+# Install talkito in development mode
+RUN pip install -e .
+
+# Install test dependencies
+RUN pip install pytest pytest-asyncio
+
+# Set environment variables for testing
+ENV PYTHONUNBUFFERED=1
+ENV TALKITO_AUTO_APPROVE_DOWNLOADS=1
+
+# Test command - just verify import works
+CMD ["python3", "-c", "import talkito; print('talkito imported successfully')"]
